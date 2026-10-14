@@ -183,7 +183,9 @@ forge-mcp §4); it does not belong in this one.
 5. **`auto` minus the encyclopedias (`backend` echoes `"auto-web"`).** ddgs's `auto` *pins* `wikipedia` +
    `grokipedia` to the front of every text search. Encyclopedic hits are the wrong answer for this
    current-events tier (openzim-mcp is the deep tier) and aren't the best web results anyway — and with region
-   `wt-wt` the wikipedia engine always fails (it builds `wt.wikipedia.org`, which doesn't exist). So
+   `wt-wt` the wikipedia engine always fails (it builds `wt.wikipedia.org`, which doesn't exist). Grokipedia
+   is excluded on its own merits too: given the controversy over its content, it is not a source this server
+   should feed to the family door — so don't re-add it even if the encyclopedia reasoning ever changes. So
    `backend.web_engines()` passes every *other* ddgs text engine as an explicit list, **shuffled per call**
    (ddgs doesn't shuffle explicit lists; `auto` does, to spread load). Built from ddgs's own registry minus
    `EXCLUDED_ENGINES`, so engines ddgs adds later are picked up automatically.

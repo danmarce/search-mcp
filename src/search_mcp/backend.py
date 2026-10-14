@@ -19,7 +19,8 @@ from ddgs.exceptions import DDGSException
 
 # ddgs's "auto" with the encyclopedia engines removed. Plain "auto" PINS wikipedia + grokipedia to the front of
 # every text search: encyclopedic hits are the wrong answer for this current-events tier (openzim-mcp is the deep
-# tier), and with region "wt-wt" the wikipedia engine always fails anyway (it builds wt.wikipedia.org). An
+# tier), with region "wt-wt" the wikipedia engine always fails anyway (it builds wt.wikipedia.org), and
+# grokipedia is excluded on its own merits (controversial content; not for a family door). An
 # explicit list isn't shuffled by ddgs, so we shuffle per call like "auto" does, to spread load across engines.
 BACKEND = "auto-web"        # echoed label: every ddgs text engine except EXCLUDED_ENGINES
 EXCLUDED_ENGINES = frozenset({"wikipedia", "grokipedia"})
