@@ -24,15 +24,17 @@ ROWS = [
 class FakeSearch:
     """Stands in for backend.search_backend; records every call."""
 
-    def __init__(self, rows=None, exc: Exception | None = None) -> None:
+    def __init__(self, rows=None, exc: Exception | None = None, script: list | None = None) -> None:
         self.rows, self.exc = rows if rows is not None else ROWS, exc
+        self.script = list(script or [])  # per-call outcomes (rows or an exception) before falling back to rows/exc
         self.calls: list[tuple] = []
 
     def __call__(self, query, max_results, region, timeout):
         self.calls.append((query, max_results, region, timeout))
-        if self.exc:
-            raise self.exc
-        return self.rows
+        outcome = self.script.pop(0) if self.script else (self.exc or self.rows)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 def _call(fake: FakeSearch, args: dict) -> dict:
@@ -77,9 +79,42 @@ def test_empty_results_are_ok_not_error():
 
 
 def test_backend_failure_is_error_not_empty():
-    d = _call(FakeSearch(exc=RatelimitException("202 Ratelimit")), {"query": "anything"})
+    fake = FakeSearch(exc=RatelimitException("202 Ratelimit"))
+    d = _call(fake, {"query": "anything"})
     assert d["status"] == "error" and d["kind"] == "backend"
     assert "Ratelimit" in d["detail"] and "results" not in d
+    assert d["attempts"] == 2 and len(fake.calls) == 2      # retried before giving up
+
+
+@pytest.mark.parametrize("first_failure", [
+    RuntimeError("DDGSException: Connection reset by peer"),   # the real-world case: DDG reset, others blocked
+    backend.EmptyOrBlocked("No results found."),
+])
+def test_one_failed_attempt_is_retried_transparently(first_failure):
+    fake = FakeSearch(script=[first_failure])
+    d = _call(fake, {"query": "USD to EUR exchange rate today", "max_results": 5})
+    assert d["status"] == "ok" and d["attempts"] == 2 and d["results"] == ROWS
+    assert fake.calls[0] == fake.calls[1]                     # same verbatim args each attempt
+
+
+def test_success_and_genuine_empty_are_not_retried():
+    for rows in (ROWS, []):
+        fake = FakeSearch(rows=rows)
+        d = _call(fake, {"query": "q"})
+        assert d["status"] == "ok" and d["attempts"] == 1 and len(fake.calls) == 1
+
+
+def test_last_failure_kind_is_reported():
+    fake = FakeSearch(script=[RuntimeError("reset"), backend.EmptyOrBlocked("No results found.")])
+    d = _call(fake, {"query": "q"})
+    assert d["kind"] == "empty_or_blocked" and d["attempts"] == 2
+
+
+def test_attempts_is_configurable(monkeypatch):
+    monkeypatch.setenv("SEARCH_ATTEMPTS", "1")
+    fake = FakeSearch(exc=RuntimeError("down"))
+    d = _call(fake, {"query": "q"})
+    assert d["status"] == "error" and d["attempts"] == 1 and len(fake.calls) == 1
 
 
 @pytest.mark.parametrize("args", [

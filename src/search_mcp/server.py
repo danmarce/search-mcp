@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import re
 from collections.abc import Callable
 from typing import Any
@@ -25,13 +26,16 @@ from .config import DEFAULT_MAX_RESULTS, DEFAULT_REGION, MAX_RESULTS_RANGE, Sett
 
 SearchFn = Callable[[str, int, str, int], list[dict[str, str]]]
 
+log = logging.getLogger("search_mcp")
+
 INSTRUCTIONS = """\
 Broad web search for CURRENT, time-sensitive information. Returns short snippets (title, url, snippet) from
 several search engines — not full pages. Synthesize an answer from the snippets, cite the `url` of each source
 you use, and say so plainly when the snippets don't answer the question. Every result has a `status`: "ok"
 (the search ran; `results` may be empty — then the web had nothing for that query), "refused" (fix the input
-as `advice` says), or "error" (the search backend failed — say search is unavailable; only for
-kind "empty_or_blocked" is one reworded retry worth it, since an extremely obscure query looks the same).
+as `advice` says), or "error" (the search failed and the server ALREADY retried it — don't repeat the same
+query; say web search is unavailable right now. Only for kind "empty_or_blocked" is one reworded query worth
+trying, since an extremely obscure query looks the same).
 """
 
 # Region codes are `country-lang` (ddgs engines split on "-"); "wt-wt" = no region. A malformed one would crash
@@ -91,18 +95,28 @@ def build_server(settings: Settings, search: SearchFn | None = None) -> MCPServe
             return _refused(f"region {resolved_region!r} is not a `country-lang` code",
                             'use e.g. "us-en", "es-es", "de-de", or omit it for "wt-wt" (no region)', **params)
         fn = search or backend.search_backend
-        try:
-            # ddgs is synchronous (it fans out on its own thread pool) — keep it off the event loop.
-            results = await asyncio.to_thread(fn, query, max_results, resolved_region, settings.timeout)
-        except backend.EmptyOrBlocked:
+        # Retry server-side: a failed ddgs search usually means the engines it happened to hit blocked us this
+        # time, and a second call (fresh engine shuffle) often succeeds — but a model told "error" won't retry.
+        # Both failure kinds are retried: from ddgs, "backend" is mostly the same no-engine-answered condition
+        # with the last engine's exception attached. A refusal never reaches here, so it's never retried.
+        for attempt in range(1, settings.attempts + 1):
+            try:
+                # ddgs is synchronous (it fans out on its own thread pool) — keep it off the event loop.
+                results = await asyncio.to_thread(fn, query, max_results, resolved_region, settings.timeout)
+            except Exception as e:  # noqa: BLE001 - any backend failure (incl. EmptyOrBlocked) is retried, then surfaced
+                failure = e
+            else:
+                return _out({"status": "ok", **params, "attempts": attempt, "count": len(results),
+                             "results": results})
+            log.warning("web_search attempt %d/%d failed: %s: %s", attempt, settings.attempts,
+                        type(failure).__name__, failure)
+        if isinstance(failure, backend.EmptyOrBlocked):
             return _error("empty_or_blocked",
-                          "no search engine returned any result. The backend can't tell a query with no matches "
-                          "from engines blocking or rate-limiting this server, so it is reported, not hidden as "
-                          "an empty list. A very obscure query may do better reworded; otherwise treat web "
-                          "search as unavailable right now.", **params)
-        except Exception as e:  # noqa: BLE001 - any backend failure is a fault, surfaced loudly
-            return _error("backend", f"{type(e).__name__}: {e}", **params)
-        return _out({"status": "ok", **params, "count": len(results), "results": results})
+                          "no search engine returned any result, even after retrying. The backend can't tell a "
+                          "query with no matches from engines blocking or rate-limiting this server, so it is "
+                          "reported, not hidden as an empty list. A very obscure query may do better reworded; "
+                          "otherwise treat web search as unavailable right now.", **params, attempts=attempt)
+        return _error("backend", f"{type(failure).__name__}: {failure}", **params, attempts=attempt)
 
     return mcp
 

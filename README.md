@@ -24,7 +24,7 @@ Every result is one JSON text block with a `status` field. Callers branch on it,
 
 ```json
 {"status":"ok","query":"...","backend":"auto-web","region":"wt-wt","safesearch":"moderate","max_results":10,
- "count":2,"results":[{"title":"...","url":"https://...","snippet":"..."}]}
+ "attempts":1,"count":2,"results":[{"title":"...","url":"https://...","snippet":"..."}]}
 ```
 
 - **`ok`**: the search ran and returned results. (`results:[]` is reserved for a backend that can prove a
@@ -32,7 +32,9 @@ Every result is one JSON text block with a `status` field. Callers branch on it,
 - **`refused`**: input the caller can fix (blank query, `max_results` out of range, malformed region), with
   `reason` and `advice`. It is returned as a normal result, never raised.
 - **`error`**: the search backend failed (blocked, rate-limited, timed out, network down), with `kind` and
-  `detail`. A backend outage is always reported as an error, never as an empty result.
+  `detail`. A backend outage is always reported as an error, never as an empty result. A failed search is
+  retried server-side first (`SEARCH_ATTEMPTS`, default 2), because a second try with a different engine
+  order often succeeds. Every result echoes `attempts`, so an `error` has already been retried.
   `kind:"empty_or_blocked"` means no engine returned anything: ddgs counts an engine that blocks or
   rate-limits it as "no results", so it can't tell an obscure query from a blocked server. One reworded retry
   is reasonable; otherwise treat search as unavailable.
@@ -53,6 +55,7 @@ uv run pytest                               # no network: the backend is faked
 |---|---|---|
 | `SEARCH_MCP_TOKEN` | unset | bearer token required on HTTP (`/healthz` stays open) |
 | `SEARCH_TIMEOUT` | `10` | seconds ddgs waits on each batch of engines |
+| `SEARCH_ATTEMPTS` | `2` | backend calls per search before reporting an error (each reshuffles the engines) |
 | `DDGS_PROXY` | unset | optional outbound proxy for ddgs (read by the library itself) |
 
 > **TLS note:** behind a TLS-inspecting proxy, `uv` may report `UnknownIssuer`. Pass `--system-certs` (or set

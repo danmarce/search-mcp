@@ -47,6 +47,7 @@ web_search(query: str, max_results: int = 10, region: str | None = None) -> <res
   "query": "<verbatim>",
   "backend": "auto-web",
   "region": "wt-wt",
+  "attempts": 1,
   "count": 7,
   "results": [
     { "title": "...", "url": "...", "snippet": "..." }
@@ -189,6 +190,15 @@ forge-mcp §4); it does not belong in this one.
    `backend.web_engines()` passes every *other* ddgs text engine as an explicit list, **shuffled per call**
    (ddgs doesn't shuffle explicit lists; `auto` does, to spread load). Built from ddgs's own registry minus
    `EXCLUDED_ENGINES`, so engines ddgs adds later are picked up automatically.
+6. **One server-side retry (`SEARCH_ATTEMPTS`, default 2), for both failure kinds.** First real-use test
+   (2026-10-13): 1 of 3 searches failed with `kind:"backend"` (DuckDuckGo "connection reset") and succeeded on a
+   manual retry. A model told "error" won't retry, so the server does — each call to the ddgs seam reshuffles the
+   engines. `backend` is retried too, not just `empty_or_blocked`: from ddgs it's mostly the *same* condition
+   (no engine answered; ddgs just attached the last engine's exception — Findings 7). Retry lives in the server,
+   not the seam, so it wraps any future backend. Every result echoes `attempts`; each failed attempt is logged
+   at WARNING to stderr — that log is the production failure-rate evidence for Decision 1's API swap. No sleep
+   between attempts (a different engine order is the point); worst-case latency is ~attempts × ddgs's time.
+   Refusals never reach the backend, so they're never retried.
 
 ## Findings (made while building — ddgs 9.16, 2026-10)
 
@@ -217,6 +227,16 @@ forge-mcp §4); it does not belong in this one.
    fine through the dev box's TLS-inspecting proxy anyway. `uv` itself still needs `--system-certs` there.
 6. **`mcp>=2.2`**, not the siblings' `>=1.12`: `mcp.server.mcpserver.MCPServer` and `title=` on the decorator
    are 2.x APIs. (forge-mcp/news-mcp declare `>=1.12` but lock 2.x — their floor is stale.)
+
+7. **ddgs's `kind:"backend"` usually means "no engine answered", and ddgs can drop good results.** ddgs keeps
+   only the *last* engine exception, and blocked engines (403/429) are silently "empty" (Findings 1). So a lone
+   DuckDuckGo reset surfaces as the whole search's error when every other engine was quietly blocked. Separately,
+   reproduced offline with fake engines: the aggregator waits with `return_when=FIRST_EXCEPTION`, so an engine
+   that fails *instantly* can end the final wait while a good engine is still in flight — its results are
+   discarded and ddgs raises. With 2 engines it lost the good result in both orders; with our 6 shuffled engines
+   it needs a narrow ordering (0/60 in simulation), so it's rare. The retry (Decision 6) covers it too. A real fix
+   would mean doing our own aggregation over ddgs's engine classes (which *can* tell non-200 `None` from parsed
+   `[]`) — deliberately not done: it couples to ddgs internals, and the sanctioned-API swap is the better lever.
 
 ## Build order
 
